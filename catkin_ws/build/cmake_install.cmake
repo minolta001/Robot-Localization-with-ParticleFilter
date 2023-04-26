@@ -137,6 +137,8 @@ if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for each subdirectory.
   include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/gtest/cmake_install.cmake")
   include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/turtlebot3_simulations/turtlebot3_simulations/cmake_install.cmake")
+  include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/motion_model/cmake_install.cmake")
+  include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/sensor_model/cmake_install.cmake")
   include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/turtlebot3_simulations/turtlebot3_fake/cmake_install.cmake")
   include("/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/build/turtlebot3_simulations/turtlebot3_gazebo/cmake_install.cmake")
 
