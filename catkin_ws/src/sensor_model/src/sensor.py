@@ -1,15 +1,19 @@
 import numpy as np
 import math
 from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseArray, Pose, Point, Quaternion
 from motion_model.msg import motion_model_msgs
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.srv import GetMap
+from std_msgs.msg import Header, String
 import rospy
 import random
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
-class sensor:
+class sensor(object):
     def __init__(self):
-        rospy.init_node('sensor_model', anonymous=True)
-        self.rate = rospy.Rate(10)
+        #rospy.init_node('sensor_model', anonymous=True)
+        #self.rate = rospy.Rate(10)
 
         # scan data
         self.all_sacns = []
@@ -31,54 +35,55 @@ class sensor:
 
         # map
         self.width = 0
-        self.height = 0
-        self.map = []
+        self.height = 0 
+        rospy.wait_for_service("static_map") 
+        house_map = rospy.ServiceProxy("static_map", GetMap)
+        self.map = house_map().map
+        self.map_coordinates = []
+
         self.resolution = 0
         self.origin = 0
 
-        # distance matrix
-        # coordinates are rounded to 2 floatintableg points x.x
-        self.likelihood_matrix = []
+        self.dist_matrix = []
+        #self.likelihood_matrix = []
 
         rospy.Subscriber('/scan', LaserScan, self.scan_callback)
         rospy.Subscriber('/motion_model', motion_model_msgs, self.motion_callback)
 
+        self.run()
+
     
     def run(self):
-        grid_msg = rospy.wait_for_message('/map', OccupancyGrid)
-        self.width = grid_msg.info.width
-        self.height = grid_msg.info.height
-        self.resolution = grid_msg.info.resolution
-        self.origin = grid_msg.info.origin
+        #grid_msg = rospy.wait_for_message('/map', OccupancyGrid)
+        self.width = self.map.info.width
+        self.height = self.map.info.height
+        self.resolution = self.map.info.resolution
+        #self.origin = grid_msg.info.origin
 
-        self.map = np.reshape(grid_msg.data, (self.height, self.width))
+        #self.map = np.reshape(grid_msg.data, (self.height, self.width))
         #self.map = np.flipud(self.map)
 
-        self.dist_matrix = np.full((self.height, self.width), np.inf)
-        self.likelihood_matrix = np.zeros_like(self.map, dtype=np.float32)
-        #self.likelihood_matrix = np.full((self.height, self.width), 1) 
+        #self.dist_matrix = np.full((self.height, self.width), np.inf)
+        #self.likelihood_matrix = np.zeros_like(self.map, dtype=np.float32)
+        #self.likelihood_matrix = np.full((self.height, self.width), 1)
 
-
-
-        '''
-        x_coords = np.arange(self.width) * self.resolution + self.origin.position.x
-        y_coords = np.arange(self.height) * self.resolution + self.origin.position.y
-        x_mesh, y_mesh = np.meshgrid(x_coords, y_coords)
-
-        x_aligned = x_mesh - self.origin.position.x
-        y_aligned = y_mesh - self.origin.position.y
-        '''
-
-
-
-
+        
         dist_file_exist = True
         if dist_file_exist:
             self.dist_matrix = np.genfromtxt('dist_matrix.csv', delimiter=',') 
             print("Load dist matrix done: ", self.dist_matrix.shape)
         else:
+            # dist_matrix initialize
+            #self.dist_matrix = np.full((self.width * self.height, 3), -1)
+            self.dist_matrix = np.full((self.width, self.height), -1.0)
+            for i in range(self.width):
+                for j in range(self.height):
+                    idx = i + j * self.width            # !! important
+                    if self.map.data[idx] > 0: 
+                        self.dist_matrix[i, j] = 0 
             self.brushfire()
 
+        '''
         #self.likelihood_field()
         count = 0
         while True:
@@ -88,36 +93,35 @@ class sensor:
             if count == 10:
                 np.savetxt('likelihood_matrix.csv', self. likelihood_matrix, delimiter=',')
                 count = 0
+        '''
     
 
-    def brushfire_propagate(self, x, y, val):
-        if(x >= 0 and x < self.map.shape[0] and y >= 0 and y < self.map.shape[1]):
-            if(self.dist_matrix[x, y] != -1):
-                if(self.dist_matrix[x, y] != math.inf):
-                    val = val + self.resolution
-                    cur = self.dist_matrix[x, y]
-                    if val < cur:
-                        self.dist_matrix[x, y] = val
 
-                elif(self.dist_matrix[x, y] == math.inf):
-                    self.dist_matrix[x, y] = val + self.resolution
+    def brushfire_propagate(self, x, y, val):
+        val = val + self.resolution
+        if(x >= 0 and x < self.width and y >= 0 and y < self.height):
+            idx = x + y * self.width
+            if(self.map.data[idx] < 100 and self.map.data[idx] >= 0):
+                    cur = self.dist_matrix[x, y]
+                    if(cur == -1):
+                        print(round(val, 3))
+                        self.dist_matrix[x, y] = round(val, 3)
+                        print(self.dist_matrix[x, y])
+                        return
+                    if(val < cur):
+                        self.dist_matrix[x, y] = round(val, 3)
+                        return
+
 
 
     def brushfire(self):
-        # initialize dist_matrix
-        for i in range(self.map.shape[0]):
-            for j in range(self.map.shape[1]):
-                if(self.map[i, j] > 90):
-                    self.dist_matrix[i, j] = 0
-                elif(self.map[i, j] == -1):
-                    self.dist_matrix[i, j] = -1
-
         # propagating
         for k in range(70):         # max_range / map.resolution
             print(f"Brushfire {k}")
-            for i in range(self.map.shape[0]):
-                for j in range(self.map.shape[1]):
-                    if(self.dist_matrix[i, j] != math.inf and self.dist_matrix[i, j] != -1):
+            for i in range(self.width):
+                for j in range(self.height): 
+                    #idx = i + j * self.width
+                    if(self.dist_matrix[i, j] >= 0):
                         val = self.dist_matrix[i, j]
                         self.brushfire_propagate(i - 1, j - 1, val)
                         self.brushfire_propagate(i, j - 1, val)
@@ -128,8 +132,15 @@ class sensor:
                         self.brushfire_propagate(i, j + 1, val)
                         self.brushfire_propagate(i + 1, j + 1, val)
 
+            print(np.nanmin(self.dist_matrix))
+            print(np.nanmax(self.dist_matrix))
+    
         #np.savetxt('dist_matrix.txt', self.dist_matrix, fmt='%.2f')
         np.savetxt('dist_matrix.csv', self.dist_matrix, delimiter=',')
+
+    
+
+
 
 
     def scan_callback(self, scan_msg):
@@ -138,7 +149,6 @@ class sensor:
         self.angle_min = scan_msg.angle_min
         self.angle_max = scan_msg.angle_max
         self.angle_increment = scan_msg.angle_increment
-        
 
 
     def motion_callback(self, msg):
@@ -168,46 +178,6 @@ class sensor:
         return ((rx - end_x) * self.resolution) ** 2 + ((ry - end_y) * self.resolution) ** 2
 
 
-    '''
-    def all_grid_likelihood_field_range_finder(self):
-        num_beams = 360
-
-        for i in range(self.map.shape[0]):
-            for j in range(self.map.shape[1]):
-                print(f"working {i}, {j}")
-                if(self.map[i, j] < 90 and self.map[i,j] != -1):
-                    q = 1
-                    #q = 0
-                    for beam in range(num_beams):
-                        angle = self.angle_min + beam * self.angle_increment
-                        end_x = i       # set endpoint x at i first
-                        end_y = j       # set endpoint y at j first
-
-                        while end_x >= 0 and end_x < self.width and end_y >= 0 and end_y < self.height:
-                            end_x = int(end_x + math.cos(angle))
-                            end_y = int(end_y + math.sin(angle))
-                            
-                            if(self.map[end_x, end_y] >= 90 or self.map[end_x, end_y] == -1):
-                                break
-
-                        x = i
-                        y = j
-
-                        # this is the range in (for range in ranges)
-                        range_dist = self.distance(x, y, end_x, end_y)      # range_dist is in 0.5 meter scale
-
-                        if range_dist < self.scan_max:
-                            dist_sq = self.find_dist_min_pair(x, y, end_x, end_y)
-                            q = q * self.pdf_gaussian(dist_sq, 0.1)
-                            print(f"q value: {q}")
-                            #q = q + math.log(self.pdf_gaussian(dist_sq, 0.1))
-                            
-                    self.likelihood_matrix[i, j] = q
-        
-        #np.savetxt('likelihood_matrix.txt', self.dist_matrix, fmt='%.2f')
-        np.savetxt('likelihood_matrix_precise.csv', self.likelihood_matrix, delimiter=',')
-        #np.savetxt('likelihood_matrix_log.csv', self.likelihood_matrix, delimiter=',')
-    '''
 
     def all_cells_go_through(self, rob_x, rob_y, end_x, end_y):
         dx = abs(end_x - rob_x)
@@ -275,8 +245,96 @@ class sensor:
                 q = q * (1 * self.pdf_gaussian(dist, 0.1))
 
 
+class particle:
+    def __init__(self, pose, weight):
+        self.pose = pose
+        self.weight = weight
+    
+    def particle_info(self):
+        theta = euler_from_quaternion([
+            self.pose.orientation.x, 
+            self.pose.orientation.y, 
+            self.pose.orientation.z, 
+            self.pose.orientation.w])[2]
+        return ("Particle: [" + str(self.pose.position.x) + ", " + str(self.pose.position.y) + ", " + str(theta) + "]")
+
+
+class likelihood_field(object):
+    def __init__(self):
+
+        self.initialized = False
+
+        rospy.init_node('likelihood_file')
+        
+        rospy.Subscriber('map', OccupancyGrid, self.map_callback)
+
+        rospy.Subscriber('scan', LaserScan, self.range_finder)
+        
+        self.particles_pub = rospy.Publisher('particels', PoseArray, queue_size=10)
+
+        self.map = OccupancyGrid()
+        self.sensor_model = sensor()
+        
+        self.particles_list = []  
+
+        self.particles_initialize()
+        self.initialized = True
+        
+
+    def particles_initialize(self):
+        particles_num = 10
+        for i in range(particles_num):
+            x = random.uniform(-3.5, 3.5)
+            y = random.uniform(-3.5, 3.5)
+            theta = random.uniform(0, math.pi)
+            
+            p = Pose()
+            p.position = Point()
+            p.position.x = x
+            p.position.y = y
+            p.position.z = 0
+            p.orientation = Quaternion()
+
+            q = quaternion_from_euler(0.0, 0.0, theta)
+            p.orientation.x = q[0]
+            p.orientation.y = q[1]
+            p.orientation.z = q[2]
+            p.orientation.w = q[3]
+            
+            par = particle(p, 1.0)
+            self.particles_list.append(par) 
+        
+        self.normalize_particles()
+        self.particles_publish()
+
+    def normalize_particles(self):
+        weight_sum = 0
+        for p in self.particles_list:
+            weight_sum = weight_sum + p.weight
+        
+        for p in self.particles_list:
+            p.weight = p.weight / weight_sum
+    
+    def map_callback(self, map_data):
+        self.map = map_data
+    
+    def particles_publish(self):
+        particles_pose_array = PoseArray()
+        particles_pose_array.header = Header(stamp=rospy.Time.now(), frame_id='map')
+        particles_pose_array.poses
+
+        for par in self.particles_list:
+            particles_pose_array.poses.append(par)
+
+        self.particles_pub.publish(particles_pose_array)
+    
+    def range_finder(self, scan_data):
+        if not self.initialized:
+            return
+        
+        
 
 if __name__ == '__main__':
-    sensor = sensor()
-    sensor.run()
+    #sensor = sensor()
+    #sensor.run()
     
