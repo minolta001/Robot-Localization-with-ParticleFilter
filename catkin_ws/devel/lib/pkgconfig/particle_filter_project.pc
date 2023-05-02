@@ -1,0 +1,8 @@
+prefix=/home/lichen_ubuntu_t480/OneDrive_minolta001@gmail.com/UmassAmherst/2023_Spring/COMP_603/P3/Robot-Localization-with-ParticleFilter/catkin_ws/devel
+
+Name: particle_filter_project
+Description: Description of particle_filter_project
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 
