@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
-import rospy
 import numpy as np
 import math
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseArray, Pose, Point, Quaternion, PoseStamped
+#from motion_model.msg import motion_model_msgs
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.srv import GetMap
 from std_msgs.msg import Header, String
+import rospy
 import random
 from tf.transformations import quaternion_from_euler, euler_from_quaternion
 from tf import TransformListener
@@ -38,6 +38,7 @@ class sensor(object):
         rospy.wait_for_service("static_map") 
         house_map = rospy.ServiceProxy("static_map", GetMap)
         self.map = house_map().map
+        self.map_coordinates = []
 
         self.resolution = 0
         self.origin = 0
@@ -63,7 +64,7 @@ class sensor(object):
 
         #self.dist_matrix = np.full((self.height, self.width), np.inf)
         #self.likelihood_matrix = np.zeros_like(self.map, dtype=np.float32)
-        #self.likelihood_matrix = np.full((self.height, self.width), 1)
+        self.likelihood_matrix = np.full((self.height, self.width), 0.0)
 
         
         dist_file_exist = True
@@ -81,11 +82,13 @@ class sensor(object):
                         self.dist_matrix[i, j] = 0 
             self.brushfire()
 
+        print("draw lf")
+        self.likelihood_field()
+        exit()
         '''
-        #self.likelihood_field()
         count = 0
         while True:
-            self.likelihood_field_range_finder(self.x, self.y, self.yaw)
+            self.likelihood_field(self.x, self.y, self.yaw)
             rospy.sleep(0.1)
             count += 1
             if count == 10:
@@ -139,6 +142,8 @@ class sensor(object):
     
 
 
+
+
     def scan_callback(self, scan_msg):
         self.scan_max = scan_msg.range_max
         self.all_scans = scan_msg.ranges
@@ -148,8 +153,93 @@ class sensor(object):
 
 
 
+    # find the coordinates that is occupied and cloest to 
+    def find_dist_min_pair(self, x, y):
+        min_val = float('inf')
+        dist_sq = 0
+        for i in range(self.map.shape[0]):
+            for j in range (self.map.shape[1]):
+                if(self.map[i, j] >= 80):
+                    dist_sq = (x - i) ** 2 + (y - j) ** 2
+                    if dist_sq < min_val:
+                        min_val = dist_sq
+        return min_val
+
+    # calculate probability of x under zero-centered gaussian model with covariance cov
+    def pdf_gaussian(self, x, cov):
+        return 1 / (math.sqrt(2 * math.pi) * cov) * math.exp(-(x ** 2) / (2 * cov ** 2))
+    
+
+    # compute distance
+    def distance(self, rx, ry, end_x, end_y):
+        return ((rx - end_x) * self.resolution) ** 2 + ((ry - end_y) * self.resolution) ** 2
 
 
+
+    def all_cells_go_through(self, rob_x, rob_y, end_x, end_y):
+        dx = abs(end_x - rob_x)
+        dy = abs(end_y - rob_y)
+        sx = 1 if rob_x < end_x else -1
+        sy = 1 if rob_y < end_y else -1
+        err = dx - dy
+        points = []
+        
+        while rob_x != end_x or rob_y != end_y:
+            points.append((rob_x, rob_y))
+            e2 = err * 2
+            if e2 > -dy:
+                err -= dy
+                rob_x += sx
+            if e2 < dx:
+                err += dx
+                rob_y += sy
+        points.append((rob_x, rob_y))
+        return points
+                          
+
+    def likelihood_field(self):
+        for i in range(self.width):
+            for j in range(self.height):
+                if(self.dist_matrix[i, j] != 0 and self.dist_matrix[i, j] != -1):
+                    res = self.pdf_gaussian(self.dist_matrix[i, j], 0.2)
+                    print(res)
+                    self.likelihood_matrix[i, j] = res
+        np.savetxt('likelihood_matrix.csv', self.likelihood_matrix, delimiter=',')
+
+         
+
+    def likelihood_field_range_finder(self, x, y, yaw):
+        read_interval = 20
+        q = 1 
+        for i in range(int(360 / read_interval)):
+            scan_range = self.all_scans[i * read_interval - 1]
+            #print(scan_range)
+            if scan_range <= self.scan_max:      # suppose sensor is at the center of the robot 
+                endpoint_x = x + scan_range * math.cos(yaw + (self.angle_min + i * read_interval * self.angle_increment))
+                endpoint_y = y + scan_range * math.sin(yaw + (self.angle_min + i * read_interval * self.angle_increment))
+                points = self.all_cells_go_through(int(x), int(y), int(endpoint_x), int(endpoint_y)) 
+
+                #print(int((x / self.resolution) + int(self.width / 2)) , int((y / self.resolution) + int(self.width / 2)))
+
+                for (px, py) in points:
+
+                    px = int((px / self.resolution) + int(self.width / 2))
+                    py = int((py / self.resolution) + int(self.height / 2))
+
+                    dist_sq = self.dist_matrix[px, py]
+                    print(dist_sq)
+                    prob_hit = self.pdf_gaussian(dist_sq, 0.2)
+                    
+                    if(self.dist_matrix[px, py] != 0 and self.dist_matrix[px, py] != -1):
+                        self.likelihood_matrix[px, py] = prob_hit  
+                        #res.append(round(prob_hit, 2))
+
+
+                #dist_sq, min_x, min_y = self.find_dist_min_pair(endpoint_x, endpoint_y)
+                dist = self.dist_matrix[int(endpoint_x), int(endpoint_y)] 
+                if dist == -1:
+                    dist = 0
+                q = q * (1 * self.pdf_gaussian(dist, 0.1))
 
 def get_yaw(p):
     yaw = euler_from_quaternion([
@@ -165,7 +255,7 @@ def sample_normal_distribution(x):
             total += random.uniform(-x, x)
         return total / 2
 
-def pdf_gaussian(x, cov):
+def pdf_gaussian(self, x, cov):
     return 1 / (math.sqrt(2 * math.pi) * cov) * math.exp(-(x ** 2) / (2 * cov ** 2))
 
 
@@ -174,7 +264,7 @@ def draw_random_sample(choices, probabilities, n):
         choices: the values to sample from represented as a list
         probabilities: the probability of selecting each element in choices represented as a list
         n: the number of samples
-    """ 
+    """
     values = np.array(range(len(choices)))
     probs = np.array(probabilities)
     bins = np.add.accumulate(probs)
@@ -183,10 +273,7 @@ def draw_random_sample(choices, probabilities, n):
     for i in inds:
         samples.append(deepcopy(choices[int(i)]))
     return samples
-
-    
-
-
+ 
 
 class particle:
     def __init__(self, pose, weight):
@@ -211,7 +298,11 @@ class ParticleFilter(object):
 
         rospy.init_node('turtlebot3_particle_filter')
         
-        self.particles_pub = rospy.Publisher('particle_cloud', PoseArray, queue_size=10)
+        rospy.Subscriber('map', OccupancyGrid, self.map_callback)
+
+        rospy.Subscriber('scan', LaserScan, self.range_finder)
+        
+        self.particles_pub = rospy.Publisher('particel_cloud', PoseArray, queue_size=10)
 
         self.robot_estimate_pub = rospy.Publisher('estimated_robot_pose', PoseStamped, queue_size=10)
 
@@ -221,7 +312,8 @@ class ParticleFilter(object):
         self.tf_broadcaster = TransformBroadcaster()
     
         
-        self.particles_num = 800
+        # particles list initialization
+        self.particles_list = []  
 
         # all scans data
         self.all_scans = []
@@ -234,20 +326,91 @@ class ParticleFilter(object):
 
 
         self.particles_initialize()
-
-        rospy.Subscriber('map', OccupancyGrid, self.map_callback)
-
-        rospy.Subscriber('scan', LaserScan, self.range_finder)
-
         self.initialized = True 
 
-    # initialize particles list
+
+    # Get delta values from robot odometry, update particles pose with noise
+    def particles_motion_model(self):   # update particles based on motion_model
+        a1 = 0.1
+        a2 = 0.1
+        a3 = 0.1
+        a4 = 0.1
+
+        cur_x = self.odom_pose.pose.position.x
+        cur_y = self.odom_pose.pose.position.y
+        cur_yaw = get_yaw(self.odom_pose.pose)
+
+        prev_x = self.prev_odom_pose.pose.position.x
+        prev_y = self.prev_odom_pose.pose.position.y
+        prev_yaw = get_yaw(self.prev_odom_pose.pose)
+
+        delta_rot1 = math.atan2(cur_y - prev_y, cur_x - prev_x) - prev_yaw
+        delta_trans = math.sqrt((cur_x - prev_x) ** 2) + ((cur_y - prev_y) ** 2)
+        delta_rot2 = cur_yaw - prev_yaw - delta_rot1
+
+        delta_rot1_cap = delta_rot1 - sample_normal_distribution(a1 * delta_rot1 + a2 * delta_trans)
+        delta_trans_cap = delta_trans - sample_normal_distribution(a3 * delta_trans + a4 * (delta_rot1 + delta_rot2))
+        delta_rot2_cap = delta_rot2 - sample_normal_distribution(a1 * delta_rot2 + a2 * delta_trans)
+
+
+        # update particle next pose, with given delta cap
+        for par in self.particles_list:
+            px = par.pose.position.x
+            py = par.pose.position.y
+            pyaw = get_yaw(par.pose)
+
+            par.pose.position.x = px + delta_trans_cap * math.cos(pyaw + delta_rot1_cap)
+            par.pose.position.y = py + delta_trans_cap * math.sin(pyaw + delta_rot1_cap)
+            yaw_next = pyaw + delta_rot1_cap + delta_rot2_cap
+            
+            q = quaternion_from_euler(0.0, 0.0, yaw_next)
+            par.pose.orientation.x = q[0]
+            par.pose.orientation.y = q[1]
+            par.pose.orientation.z = q[2]
+            par.pose.orientation.w = q[3]
+
+    
+    def particles_sensor_model(self):
+        scan_angle = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
+
+        for par in self.particles_list:
+            x = par.pose.position.x
+            y = par.pose.position.y
+            yaw = get_yaw(par.pose)
+            
+            #x_coor = int((x - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
+            #y_coor = int((y - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
+            
+            q = 1
+            
+            for angle in scan_angle:
+                scan_range = self.all_scans[angle]
+                if scan_range < 3.5:
+                    endpoint_x =  int(x + scan_range * math.cos(yaw + (self.angle_min + angle * self.angle_increment)))
+                    endpoint_y =  int(y + scan_range * math.sin(yaw + (self.angle_min + angle * self.angle_increment)))
+
+                    x_coor = int((endpoint_x - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
+                    y_coor = int((endpoint_y - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
+            
+
+                    print(f"end x: {x_coor}, end y: {y_coor}")
+                    dist = self.sensor_model.dist_matri[endpoint_x, endpoint_y]
+                    if dist == -1:
+                        dist = 0
+                    q = q * (1 * pdf_gaussian(dist, 0.1))
+        
+            par.weight = q
+
+            
+            
+        
+
     def particles_initialize(self):
-        self.particles_list = []
-        for i in range(self.particles_num):
-            x = random.uniform(-8, 8)
-            y = random.uniform(-8, 8)
-            theta = random.uniform(0, 359 / 180 * math.pi)
+        particles_num = 50
+        for i in range(particles_num):
+            x = random.uniform(-3.5, 3.5)
+            y = random.uniform(-3.5, 3.5)
+            theta = random.uniform(0, math.pi)
             
             p = Pose()
             p.position = Point()
@@ -264,183 +427,28 @@ class ParticleFilter(object):
             
             par = particle(p, 1.0)
             self.particles_list.append(par) 
-
-
+        
         self.normalize_particles()
         self.particles_publish()
 
-
-
-
-    # Get delta values from robot odometry, update particles pose with noise
-    def particles_motion_model(self):   # update particles based on motion_model
-        a1 = 0.05
-        a2 = 0.05
-        a3 = 0.05
-        a4 = 0.05
-
-        cur_x = self.odom_pose.pose.position.x
-        cur_y = self.odom_pose.pose.position.y
-        cur_yaw = get_yaw(self.odom_pose.pose)
-
-        prev_x = self.prev_odom_pose.pose.position.x
-        prev_y = self.prev_odom_pose.pose.position.y
-        prev_yaw = get_yaw(self.prev_odom_pose.pose)
-
-        delta_rot1 = math.atan2(cur_y - prev_y, cur_x - prev_x) - prev_yaw
-        delta_trans = math.sqrt(((cur_x - prev_x) ** 2) + ((cur_y - prev_y) ** 2))
-        delta_rot2 = cur_yaw - prev_yaw - delta_rot1
-
-        # update particle next pose, with given delta cap
-        '''
-        for par in self.particles_list:
-            delta_rot1_cap = delta_rot1 - sample_normal_distribution(a1 * delta_rot1 + a2 * delta_trans)
-            delta_trans_cap = delta_trans - sample_normal_distribution(a3 * delta_trans + a4 * (delta_rot1 + delta_rot2))
-            delta_rot2_cap = delta_rot2 - sample_normal_distribution(a1 * delta_rot2 + a2 * delta_trans)
-
-            new_pose = Pose()
-            new_pose.position.x = par.pose.position.x + delta_trans_cap * math.cos(get_yaw(par.pose) + delta_rot1_cap)
-            new_pose.position.y = par.pose.position.y + delta_trans_cap * math.sin(get_yaw(par.pose) + delta_rot1_cap)
-            new_yaw = get_yaw(par.pose) + delta_rot1_cap + delta_rot2_cap 
-
-            qua = quaternion_from_euler(0.0, 0.0, new_yaw)
-            new_pose.orientation.x = qua[0]
-            new_pose.orientation.y = qua[1]
-            new_pose.orientation.z = qua[2]
-            new_pose.orientation.w = qua[3]
-            
-            par.pose = new_pose
-        '''
-
-        for par in self.particles_list:
-            px = par.pose.position.x
-            py = par.pose.position.y
-            pyaw = get_yaw(par.pose)
-
-            delta_rot1_cap = delta_rot1 - sample_normal_distribution(a1 * delta_rot1 + a2 * delta_trans)
-            delta_trans_cap = delta_trans - sample_normal_distribution(a3 * delta_trans + a4 * (delta_rot1 + delta_rot2))
-            delta_rot2_cap = delta_rot2 - sample_normal_distribution(a1 * delta_rot2 + a2 * delta_trans)
-
-
-            next_x = px + delta_trans_cap * math.cos(pyaw + delta_rot1_cap)
-            next_y = py + delta_trans_cap * math.sin(pyaw + delta_rot1_cap)
-            #x_coor = int((next_x - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
-            #y_coor = int((next_y - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
-
-            par.pose.position.x = next_x
-            par.pose.position.y = next_y
-            yaw_next = pyaw + delta_rot1_cap + delta_rot2_cap
-            q = quaternion_from_euler(0.0, 0.0, yaw_next)
-            par.pose.orientation.x = q[0]
-            par.pose.orientation.y = q[1]
-            par.pose.orientation.z = q[2]
-            par.pose.orientation.w = q[3]
-
-    
-    def particles_sensor_model(self):
-        scan_angle = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
-        #scan_angle = [0, 45, 90, 135, 180, 225, 270, 315]
-        for par in self.particles_list:
-            #x_coor = int((x - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
-            #y_coor = int((y - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
-
-            x = par.pose.position.x
-            y = par.pose.position.y
-            yaw = get_yaw(par.pose)
-           
-            #q = 1
-            q = 0
-
-            for angle in scan_angle:
-                scan_range = self.all_scans[angle]
-
-                if scan_range > 3.5:
-                    scan_range = 3.5
-
-                if scan_range <= 3.5:
-                    endpoint_x = x + scan_range * math.cos(yaw + (self.angle_min + angle * self.angle_increment))
-                    endpoint_y = y + scan_range * math.sin(yaw + (self.angle_min + angle * self.angle_increment))
-
-                    x_coor = int((endpoint_x - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
-                    y_coor = int((endpoint_y - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
-
-                    dist = 0
-                    if(x_coor >= 384 or y_coor >= 384):
-                        dist = -1
-                    else:
-                        dist = self.sensor_model.dist_matrix[x_coor, y_coor]
-
-
-                    if dist != -1: 
-                        prob = pdf_gaussian(dist, 1)
-                        #q = q * prob
-                        q = q + math.log(prob)
-                    else:
-                        q = q
-            if q != 0:
-                par.weight = q
-            else:
-                par.weight = 0
-
-            
-        
-
     def normalize_particles(self):
-        '''
         weight_sum = 0
         for p in self.particles_list:
             weight_sum = weight_sum + p.weight
-        '''
-
-        weight_sum = sum([par.weight for par in self.particles_list])
-
+        
         for p in self.particles_list:
             p.weight = p.weight / weight_sum
 
-
     def resample_particles(self):
-        '''
         probs = []  # probabilities (weight)
         for par in self.particles_list:
             probs.append(par.weight)
-        '''
 
-        particles_weights = [particle.weight for particle in self.particles_list]
 
-        new_particles_list = draw_random_sample(self.particles_list, particles_weights, self.particles_num)
+        new_particles_list = draw_random_sample(self.particles_list,
+                                                probs,
+                                                len(self.particles_list))
         self.particles_list = new_particles_list
-
-
-        '''
-        self.particles_list = []
-        for par in new_particles_list:
-            pose = par.pose
-            weight = par.weight
-            new_p = particle(pose, weight)
-            self.particles_list.append(new_p)
-        '''
-
-        '''
-        beta = 0.0
-        self.normalize_particles()
-        new_list = []
-        test_list = []
-        l = len(self.particles_list)
-        index = int(random.random() * l)
-        max_prob = np.max(probs)
-
-        for i in range(l):
-            beta += random.random() * 2.0 * max_prob
-            while beta > probs[index]:
-                beta -= probs[index]
-                index = (index + 1) % l
-
-            test_list.append(probs[index])
-            new_list.append(self.particles_list[index])
-
-        #print(test_list) 
-        self.particles_list = new_list
-        '''
 
     def update_robot_estimate_pose(self):
         x_sum = 0
@@ -472,7 +480,6 @@ class ParticleFilter(object):
         self.robot_pose_estimate.orientation.y = oy_sum
         self.robot_pose_estimate.orientation.z = oz_sum
         self.robot_pose_estimate.orientation.w = ow_sum
-    
 
         
     
@@ -485,32 +492,28 @@ class ParticleFilter(object):
         particles_pose_array.poses
 
         for par in self.particles_list:
-            particles_pose_array.poses.append(par.pose)
+            particles_pose_array.poses.append(par)
 
         self.particles_pub.publish(particles_pose_array)
-
 
     def robot_estimate_pose_publish(self):
         robot_pose_stamped = PoseStamped()
         robot_pose_stamped.pose = self.robot_pose_estimate
         robot_pose_stamped.header = Header(stamp=rospy.Time.now(), frame_id="map")
         self.robot_estimate_pub.publish(robot_pose_stamped)
-
     
     def range_finder(self, scan_data):
         self.angle_min = scan_data.angle_min
         self.angle_increment = scan_data.angle_increment
         self.all_scans = scan_data.ranges
 
-        
-       
         if not self.initialized:
             return
     
         if not(self.tf_listener.canTransform(self.base_frame, scan_data.header.frame_id, scan_data.header.stamp)):
             return
         
-        self.tf_listener.waitForTransform(self.base_frame, "odom", scan_data.header.stamp, rospy.Duration(2)) 
+        self.tf_listener.waitForTransform(self.base_frame, "odom", scan_data.header.stamp, rospy.Duration(0.5)) 
 
         if not(self.tf_listener.canTransform(self.base_frame, scan_data.header.frame_id, scan_data.header.stamp)): 
             return
@@ -522,52 +525,32 @@ class ParticleFilter(object):
         self.scan_pose = self.tf_listener.transformPose(self.base_frame, p)
         
         p = PoseStamped(header=Header(stamp=scan_data.header.stamp,
-                                      frame_id=self.base_frame),
+                                      frame_i=self.base_frame),
                         pose=Pose())
         
         # transform base_frame to odom_frame (robot pose based on odometry)
-        self.odom_pose = self.tf_listener.transformPose("odom", p)
-
-        #i = round(self.odom_pose.pose.position.x, 2)
-        #j = round(self.odom_pose.pose.position.y, 2)
-        #x_coor = int((i - self.sensor_model.origin.position.x) / self.sensor_model.resolution)
-        #y_coor = int((j - self.sensor_model.origin.position.y) / self.sensor_model.resolution)
-        #print(x_coor, y_coor)
-        #print(self.sensor_model.dist_matrix[x_coor, y_coor])
-        #print("--------------------")
+        self.odom_pose = self.tf_listener.transformPose(self.odom_frame, p)
     
-        if not self.prev_odom_pose:
+        if self.prev_odom_pose == None:
             self.prev_odom_pose = self.odom_pose
             return
         
-        #if len(self.particles_list) != 0:
-        if self.particles_list:
-            cur_x = self.odom_pose.pose.position.x
-            cur_y = self.odom_pose.pose.position.y
-            cur_yaw = get_yaw(self.odom_pose.pose)
-
-            prev_x = self.prev_odom_pose.pose.position.x
-            prev_y = self.prev_odom_pose.pose.position.y
-            prev_yaw = get_yaw(self.prev_odom_pose.pose)
-
-            if(np.abs(cur_x - prev_x) > 0.1 or
-               np.abs(cur_y - prev_y) > 0.1 or
-               np.abs(cur_yaw - prev_yaw) > math.pi / 6):
-                self.particles_motion_model()
-
-                self.particles_sensor_model()
-
-                self.normalize_particles()
+        if len(self.particles_list) != 0:
+            self.particles_motion_model()
             
-                self.resample_particles()
+            self.particles_sensor_model()
 
-                self.update_robot_estimate_pose()
+            self.normalize_particles()
+        
+            self.resample_particles()
 
-                self.particles_publish()
+            self.update_robot_estimate_pose()
 
-                self.robot_estimate_pose_publish()
-                
-                self.prev_odom_pose = self.odom_pose
+            self.particles_publish()
+
+            self.robot_estimate_pose_publish
+            
+            self.prev_odom_pose = self.odom_pose
             
 
 
@@ -577,8 +560,6 @@ class ParticleFilter(object):
         
 
 if __name__ == '__main__':
-    #sensor = sensor()
-    #sensor.run()
+    sensor = sensor()
+    sensor.run()
     
-    pf = ParticleFilter()
-    rospy.spin()
